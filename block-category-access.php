@@ -26,7 +26,8 @@ add_action('admin_init', function () {
     register_setting('bta_settings_group', 'bta_blocked_categories');
     register_setting('bta_settings_group', 'bta_blocked_tags');
     register_setting('bta_settings_group', 'bta_block_posts_enabled');
-    register_setting('bta_settings_group', 'bta_hide_blocked_categories_in_menu'); // 新增隐藏菜单开关
+    register_setting('bta_settings_group', 'bta_hide_blocked_categories_in_menu');
+    register_setting('bta_settings_group', 'bta_robots_noindex_enabled'); // robots noindex开关
 });
 
 // 后台设置页面 HTML
@@ -35,6 +36,7 @@ function bta_settings_page() {
     $tag_slugs = esc_attr(get_option('bta_blocked_tags', ''));
     $block_posts = get_option('bta_block_posts_enabled', '0');
     $hide_menu = get_option('bta_hide_blocked_categories_in_menu', '0');
+    $robots_noindex = get_option('bta_robots_noindex_enabled', '0');
     ?>
     <div class="wrap">
         <h1>分类与标签访问控制</h1>
@@ -73,6 +75,15 @@ function bta_settings_page() {
                         <label>
                             <input type="checkbox" name="bta_hide_blocked_categories_in_menu" value="1" <?php checked($hide_menu, '1'); ?> />
                             启用后，菜单中屏蔽分类将不会显示
+                        </label>
+                    </td>
+                </tr>
+                <tr valign="top">
+                    <th scope="row">Robots noindex 屏蔽</th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="bta_robots_noindex_enabled" value="1" <?php checked($robots_noindex, '1'); ?> />
+                            启用后，前端屏蔽分类、标签、文章页面将自动添加 noindex，阻止搜索引擎收录
                         </label>
                     </td>
                 </tr>
@@ -139,6 +150,34 @@ function bta_block_access() {
     exit;
 }
 
+// 搜索结果过滤，屏蔽指定分类和标签文章
+add_action('pre_get_posts', function ($query) {
+    if ($query->is_search() && $query->is_main_query()) {
+        $blocked_categories = array_filter(array_map('trim', explode(',', get_option('bta_blocked_categories', ''))));
+        $blocked_tags = array_filter(array_map('trim', explode(',', get_option('bta_blocked_tags', ''))));
+
+        $cat_ids = [];
+        foreach ($blocked_categories as $slug) {
+            $cat = get_category_by_slug($slug);
+            if ($cat) $cat_ids[] = $cat->term_id;
+        }
+
+        $tag_ids = [];
+        foreach ($blocked_tags as $slug) {
+            $tag = get_term_by('slug', $slug, 'post_tag');
+            if ($tag) $tag_ids[] = $tag->term_id;
+        }
+
+        if ($cat_ids) {
+            $query->set('category__not_in', $cat_ids);
+        }
+
+        if ($tag_ids) {
+            $query->set('tag__not_in', $tag_ids);
+        }
+    }
+});
+
 // 过滤分类列表，兼容B2主题等，屏蔽指定分类
 add_filter('get_terms', function ($terms, $taxonomies, $args) {
     if (empty($terms) || !in_array('category', (array)$taxonomies)) {
@@ -193,5 +232,51 @@ add_action('init', function () {
 
             return $items;
         }, 10, 3);
+    }
+});
+
+// robots noindex 头部标签注入
+add_action('wp_head', function () {
+    $robots_noindex = get_option('bta_robots_noindex_enabled', '0');
+    if ($robots_noindex !== '1') return;
+
+    if (is_category()) {
+        $obj = get_queried_object();
+        $blocked_categories = array_filter(array_map('trim', explode(',', get_option('bta_blocked_categories', ''))));
+        if ($obj && in_array($obj->slug, $blocked_categories)) {
+            echo '<meta name="robots" content="noindex,nofollow" />' . "\n";
+        }
+    }
+
+    if (is_tag()) {
+        $obj = get_queried_object();
+        $blocked_tags = array_filter(array_map('trim', explode(',', get_option('bta_blocked_tags', ''))));
+        if ($obj && in_array($obj->slug, $blocked_tags)) {
+            echo '<meta name="robots" content="noindex,nofollow" />' . "\n";
+        }
+    }
+
+    if (is_single()) {
+        global $post;
+        $blocked_categories = array_filter(array_map('trim', explode(',', get_option('bta_blocked_categories', ''))));
+        $blocked_tags = array_filter(array_map('trim', explode(',', get_option('bta_blocked_tags', ''))));
+
+        $cats = get_the_category($post->ID);
+        foreach ($cats as $cat) {
+            if (in_array($cat->slug, $blocked_categories)) {
+                echo '<meta name="robots" content="noindex,nofollow" />' . "\n";
+                return;
+            }
+        }
+
+        $tags = get_the_tags($post->ID);
+        if ($tags) {
+            foreach ($tags as $tag) {
+                if (in_array($tag->slug, $blocked_tags)) {
+                    echo '<meta name="robots" content="noindex,nofollow" />' . "\n";
+                    return;
+                }
+            }
+        }
     }
 });
